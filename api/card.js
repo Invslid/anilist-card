@@ -7,13 +7,13 @@ const path = require("path");
 
 // ---- Theme (change freely) ----
 const THEME = {
-  bg: "#1b1212",
-  border: "#e0a526",
-  title: "#ffd966",
-  text: "#fff1d6",
-  sub: "#e6b86a",
-  bar: "#4a2a20",
-  barFill: "#e5372c",
+  bg: "#0b1622",
+border: "#3db4f2",
+title: "#7fd3ff",
+text: "#ffffff",
+sub: "#8fa6bd",
+bar: "#1c2b40",
+barFill: "#3db4f2",
   watching: "Currently Watching",
   completed: "Recently Completed",
 };
