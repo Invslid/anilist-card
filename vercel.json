@@ -1,4 +1,5 @@
 {
   "rewrites": [{ "source": "/card/:user", "destination": "/api/card?user=:user" }],
-  "functions": { "api/card.js": { "includeFiles": "luffy.*" } }
+  "functions": { "api/card.js": { "includeFiles": "luffy*" } }
 }
+
