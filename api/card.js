@@ -1,7 +1,6 @@
-// AniList "Currently Watching/Reading" card with a character image.
-// Setup: put a picture named luffy.png (.jpg, .webp or .gif) next to this file.
+// AniList card: Luffy image on the left, 1 currently-watching + 1 recently-completed anime on the right.
 // Vercel function: /card/<username> is rewritten to /api/card?user=<username>
-// Bio embed: img(https://your-host/card/YourUsername)
+// Optional files in the repo root: luffy.(png|jpg|jpeg|webp|gif) and luffy-font.(woff2|woff|ttf|otf)
 
 const fs = require("fs");
 const path = require("path");
@@ -15,7 +14,8 @@ const THEME = {
   sub: "#e6b86a",
   bar: "#4a2a20",
   barFill: "#e5372c",
-  heading: "Currently Watching/Reading",
+  watching: "Currently Watching",
+  completed: "Recently Completed",
 };
 
 // ---- Character image (optional) ----
@@ -31,21 +31,58 @@ function loadImage() {
 }
 const HERO = loadImage();
 
+// ---- Custom font (optional) ----
+function loadFont() {
+  const fmts = { woff2: ["font/woff2", "woff2"], woff: ["font/woff", "woff"],
+                 ttf: ["font/ttf", "truetype"], otf: ["font/otf", "opentype"] };
+  for (const ext of Object.keys(fmts)) {
+    const p = path.join(process.cwd(), `luffy-font.${ext}`);
+    if (fs.existsSync(p)) {
+      const [mime, fmt] = fmts[ext];
+      return { fmt, uri: `data:${mime};base64,${fs.readFileSync(p).toString("base64")}` };
+    }
+  }
+  return null;
+}
+const FONT = loadFont();
+const FAM = FONT ? "'CardFont', Georgia, serif" : "Georgia, serif";
+
 const QUERY = `
 query ($name: String) {
-  anime: MediaListCollection(userName: $name, type: ANIME, status: CURRENT, sort: UPDATED_TIME_DESC) {
-    lists { entries { progress media { title { romaji english } episodes coverImage { medium }
-      nextAiringEpisode { episode timeUntilAiring } } } }
+  watching: Page(perPage: 1) {
+    mediaList(userName: $name, type: ANIME, status: CURRENT, sort: UPDATED_TIME_DESC) {
+      progress
+      media { title { romaji english } episodes coverImage { large medium }
+        nextAiringEpisode { episode timeUntilAiring } }
+    }
   }
-  manga: MediaListCollection(userName: $name, type: MANGA, status: CURRENT, sort: UPDATED_TIME_DESC) {
-    lists { entries { progress media { title { romaji english } chapters coverImage { medium } } } }
+  done: Page(perPage: 1) {
+    mediaList(userName: $name, type: ANIME, status: COMPLETED, sort: FINISHED_ON_DESC) {
+      score(format: POINT_10)
+      completedAt { year month day }
+      media { title { romaji english } episodes coverImage { large medium } }
+    }
   }
 }`;
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-async function fetchEntries(name) {
+function wrap(s, max, lines) {
+  const out = [];
+  let cur = "";
+  for (const w of s.split(/\s+/)) {
+    const next = (cur + " " + w).trim();
+    if (next.length <= max) cur = next;
+    else { if (cur) out.push(cur); cur = w; }
+  }
+  if (cur) out.push(cur);
+  const kept = out.slice(0, lines).map((l) => (l.length > max ? l.slice(0, max - 1) + "…" : l));
+  if (out.length > lines) kept[lines - 1] = kept[lines - 1].replace(/…$/, "").slice(0, max - 1) + "…";
+  return kept;
+}
+
+async function fetchData(name) {
   const res = await fetch("https://graphql.anilist.co", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -53,9 +90,7 @@ async function fetchEntries(name) {
   });
   const { data, errors } = await res.json();
   if (errors) throw new Error(errors[0].message);
-  const flat = (c, kind) =>
-    c.lists.flatMap((l) => l.entries).map((e) => ({ ...e, kind }));
-  return [...flat(data.manga, "manga"), ...flat(data.anime, "anime")].slice(0, 5);
+  return { watching: data.watching.mediaList[0], done: data.done.mediaList[0] };
 }
 
 // SVGs used as <img> can't load external images, so embed covers as base64.
@@ -71,32 +106,51 @@ const eta = (sec) => {
 };
 
 async function renderCard(name) {
-  const entries = await fetchEntries(name);
-  const covers = await Promise.all(entries.map((e) => toDataUri(e.media.coverImage.medium)));
+  const { watching, done } = await fetchData(name);
 
-  const leftW = HERO ? 280 : 0;           // width of the character panel
+  const W = 640, H = 360;                 // 16:9
+  const leftW = HERO ? 280 : 0;
   const listX = leftW + 16;
-  const W = 640, rowH = 62;   // 640x360 = 16:9
-  const H = 360;
-  const listW = W - listX - 16;
+  const tx = listX + 84;                  // text column (right of the cover)
+  const textW = W - 16 - tx;
 
-  const rows = entries.map((e, i) => {
-    const y = 52 + i * rowH;
+  // One section = heading + big cover + title (2 lines max) + details
+  async function section(headY, label, e, emptyText, detail) {
+    const head = `<text x="${listX}" y="${headY}" class="h">${label}</text>`;
+    if (!e) return head + `<text x="${listX}" y="${headY + 34}" class="s">${emptyText}</text>`;
     const m = e.media;
-    const title = trunc(m.title.english || m.title.romaji, 30);
-    const unit = e.kind === "anime" ? "EP" : "CH";
-    const total = e.kind === "anime" ? m.episodes : m.chapters;
+    const img = await toDataUri(m.coverImage.large || m.coverImage.medium);
+    const top = headY + 12;
+    const lines = wrap(m.title.english || m.title.romaji, 26, 2);
+    const titleSvg = lines
+      .map((l, i) => `<text x="${tx}" y="${top + 18 + i * 18}" class="t">${esc(l)}</text>`)
+      .join("");
+    const nextY = top + 18 + lines.length * 18 + 8;
+    return `${head}
+    <clipPath id="c${headY}"><rect x="${listX}" y="${top}" width="72" height="102" rx="6"/></clipPath>
+    <image href="${img}" x="${listX}" y="${top}" width="72" height="102" preserveAspectRatio="xMidYMid slice" clip-path="url(#c${headY})"/>
+    ${titleSvg}${detail(nextY, e)}`;
+  }
+
+  const watchingSvg = await section(34, THEME.watching, watching, "Nothing on your Watching list", (y, e) => {
+    const m = e.media;
+    const total = m.episodes;
     const pct = total ? Math.min(e.progress / total, 1) : 0.3;
     const next = m.nextAiringEpisode
-      ? `ep ${m.nextAiringEpisode.episode} in ${eta(m.nextAiringEpisode.timeUntilAiring)}`
-      : "";
+      ? `ep ${m.nextAiringEpisode.episode} in ${eta(m.nextAiringEpisode.timeUntilAiring)}` : "";
     return `
-    <image href="${covers[i]}" x="${listX}" y="${y}" width="36" height="52" preserveAspectRatio="xMidYMid slice" clip-path="url(#r6)"/>
-    <text x="${listX + 46}" y="${y + 14}" class="t">${esc(title)}</text>
-    <text x="${listX + 46}" y="${y + 32}" class="s">${unit} ${e.progress}${total ? " / " + total : ""}</text>
-    <text x="${W - 16}" y="${y + 32}" class="s" text-anchor="end">${esc(next)}</text>
-    <rect x="${listX + 46}" y="${y + 40}" width="${listW - 46}" height="4" rx="2" fill="${THEME.bar}"/>
-    <rect x="${listX + 46}" y="${y + 40}" width="${(listW - 52) * pct}" height="4" rx="2" fill="${THEME.barFill}"/>`;
+    <text x="${tx}" y="${y}" class="s">EP ${e.progress}${total ? " / " + total : ""}</text>
+    <rect x="${tx}" y="${y + 8}" width="${textW}" height="4" rx="2" fill="${THEME.bar}"/>
+    <rect x="${tx}" y="${y + 8}" width="${textW * pct}" height="4" rx="2" fill="${THEME.barFill}"/>
+    <text x="${tx}" y="${y + 30}" class="s">${esc(next)}</text>`;
+  });
+
+  const doneSvg = await section(212, THEME.completed, done, "Nothing completed yet", (y, e) => {
+    const c = e.completedAt || {};
+    const date = c.month && c.year ? `${MONTHS[c.month - 1]}${c.day ? " " + c.day : ""}, ${c.year}` : "";
+    return `
+    <text x="${tx}" y="${y}" class="s">Completed${date ? " · " + date : ""}</text>
+    ${e.score ? `<text x="${tx}" y="${y + 22}" class="s">★ ${e.score}/10</text>` : ""}`;
   });
 
   const hero = HERO
@@ -107,15 +161,16 @@ async function renderCard(name) {
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <style>
-    .t { font: 700 14px Georgia, serif; fill: ${THEME.text} }
-    .s { font: 12px sans-serif; fill: ${THEME.sub} }
-    .h { font: italic 700 18px Georgia, serif; fill: ${THEME.title} }
+    ${FONT ? `@font-face { font-family: 'CardFont'; src: url(${FONT.uri}) format('${FONT.fmt}'); }` : ""}
+    .t { font: ${FONT ? "400" : "700"} 14px ${FAM}; fill: ${THEME.text} }
+    .s { font: 12px ${FONT ? FAM : "sans-serif"}; fill: ${THEME.sub} }
+    .h { font: ${FONT ? "400 18px" : "italic 700 16px"} ${FAM}; fill: ${THEME.title} }
   </style>
-  <defs><clipPath id="r6"><rect x="${listX}" y="0" width="36" height="${H}" rx="6"/></clipPath></defs>
   <rect x="1" y="1" width="${W - 2}" height="${H - 2}" rx="14" fill="${THEME.bg}" stroke="${THEME.border}" stroke-width="2"/>
   ${hero}
-  <text x="${listX}" y="30" class="h">${THEME.heading}</text>
-  ${rows.join("")}
+  ${watchingSvg}
+  <line x1="${listX}" y1="190" x2="${W - 16}" y2="190" stroke="${THEME.bar}" stroke-width="1"/>
+  ${doneSvg}
 </svg>`;
 }
 
