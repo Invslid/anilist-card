@@ -20,7 +20,7 @@ barFill: "#3db4f2",
 
 // ---- Character image (optional) ----
 function loadImage() {
-  for (const f of ["luffy.gif", "luffy.png", "luffy.jpg", "luffy.jpeg", "luffy.webp"]) {
+  for (const f of ["Luffy.gif", "luffy.png", "luffy.jpg", "luffy.jpeg", "luffy.webp"]) {
     const p = path.join(process.cwd(), f);
     if (fs.existsSync(p)) {
       const ext = path.extname(f).slice(1).replace("jpg", "jpeg");
